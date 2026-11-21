@@ -5,7 +5,10 @@ import {
   BellOff,
   Bot,
   ClipboardList,
+  LayoutGrid,
+  LayoutList,
   Play,
+  SlidersHorizontal,
   Sun,
   Timer,
   Trash2,
@@ -14,13 +17,17 @@ import {
 import {
   ALARM_REPEAT_MS,
   CHAT_STORAGE_KEY,
+  DURATIONS_STORAGE_KEY,
   GARNISH_ITEMS,
   LOGS_STORAGE_KEY,
   SORT_STORAGE_KEY,
   STORAGE_PREFIX,
+  WARMUPS_STORAGE_KEY,
   WARN_THRESHOLD_SEC,
   formatClock,
+  formatDurationLabel,
   formatHMS,
+  formatWarmupLabel,
 } from './data/garnishItems';
 import {
   AppSection,
@@ -45,7 +52,7 @@ import {
 import { GarnishCard } from './components/GarnishCard';
 import { ShiftLogView } from './components/ShiftLogView';
 import { AssistantPanel } from './components/AssistantPanel';
-import { StartAllModal } from './components/StartAllModal';
+import { DurationsModal } from './components/DurationsModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import {
@@ -102,12 +109,54 @@ function loadStoredChat(): ChatMessage[] {
   }
 }
 
+function loadStoredDurations(): Record<string, number> {
+  const raw = localStorage.getItem(DURATIONS_STORAGE_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const valid: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'number' && v >= 60) {
+        valid[k] = v;
+      }
+    }
+    return valid;
+  } catch {
+    return {};
+  }
+}
+
+function loadStoredWarmups(): Record<string, number> {
+  const raw = localStorage.getItem(WARMUPS_STORAGE_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const valid: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'number' && v >= 0) {
+        valid[k] = v;
+      }
+    }
+    return valid;
+  } catch {
+    return {};
+  }
+}
+
 export default function App() {
   const [bacStates, setBacStates] = useState<Record<string, BacState | null>>(loadAllBacStates);
   const [now, setNow] = useState<number>(() => Date.now());
   const [sortByUrgency, setSortByUrgency] = useState<boolean>(
     () => localStorage.getItem(SORT_STORAGE_KEY) === '1'
   );
+  const [compactView, setCompactView] = useState<boolean>(() => {
+    const saved = localStorage.getItem('time_app_compact_view');
+    if (saved === '1') return true;
+    if (saved === '0') return false;
+    return typeof window !== 'undefined' ? window.innerWidth < 640 : false;
+  });
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
   const [activeSection, setActiveSection] = useState<AppSection>(() => {
     if (typeof window === 'undefined') return 'station';
@@ -123,16 +172,59 @@ export default function App() {
 
   const [confirmPending, setConfirmPending] = useState<Record<string, ConfirmAction>>({});
   const [stopAllConfirming, setStopAllConfirming] = useState<boolean>(false);
-  const [startAllModalOpen, setStartAllModalOpen] = useState<boolean>(false);
+  const [startAllConfirming, setStartAllConfirming] = useState<boolean>(false);
+  const [durationsModalOpen, setDurationsModalOpen] = useState<boolean>(false);
+  const [customDurations, setCustomDurations] = useState<Record<string, number>>(loadStoredDurations);
+  const [customWarmups, setCustomWarmups] = useState<Record<string, number>>(loadStoredWarmups);
 
   const [shiftLogs, setShiftLogs] = useState<ShiftLogEntry[]>(loadStoredLogs);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(loadStoredChat);
   const [assistantMode, setAssistantMode] = useState<AssistantMode>('standard');
 
+  const effectiveItems = useMemo(() => {
+    return GARNISH_ITEMS.map((item) => {
+      const overrideSec = customDurations[item.id];
+      const overrideWarmup = customWarmups[item.id];
+      const nextSec = overrideSec ?? item.sec;
+      const nextWarmupSec = overrideWarmup !== undefined ? overrideWarmup : item.warmupSec;
+      if (nextSec === item.sec && nextWarmupSec === item.warmupSec) return item;
+      return {
+        ...item,
+        sec: nextSec,
+        dureeTxt: nextSec === item.sec ? item.dureeTxt : formatDurationLabel(nextSec),
+        warmupSec: nextWarmupSec,
+        warmupTxt:
+          nextWarmupSec === item.warmupSec
+            ? item.warmupTxt
+            : formatWarmupLabel(nextWarmupSec),
+      };
+    });
+  }, [customDurations, customWarmups]);
+
+  const handleSaveDurations = useCallback(
+    (nextDurations: Record<string, number>, nextWarmups: Record<string, number>) => {
+      setCustomDurations(nextDurations);
+      if (Object.keys(nextDurations).length === 0) {
+        localStorage.removeItem(DURATIONS_STORAGE_KEY);
+      } else {
+        localStorage.setItem(DURATIONS_STORAGE_KEY, JSON.stringify(nextDurations));
+      }
+
+      setCustomWarmups(nextWarmups);
+      if (Object.keys(nextWarmups).length === 0) {
+        localStorage.removeItem(WARMUPS_STORAGE_KEY);
+      } else {
+        localStorage.setItem(WARMUPS_STORAGE_KEY, JSON.stringify(nextWarmups));
+      }
+    },
+    []
+  );
+
   const wakeLockDesiredRef = useRef<boolean>(false);
   const lastDangerBeepAtRef = useRef<number>(0);
   const confirmTimersRef = useRef<Record<string, number>>({});
   const stopAllTimerRef = useRef<number | null>(null);
+  const startAllTimerRef = useRef<number | null>(null);
 
   const appendLog = useCallback(
     (
@@ -327,7 +419,7 @@ export default function App() {
       localStorage.removeItem(STORAGE_PREFIX + item.id);
       setBacStates((prev) => ({ ...prev, [item.id]: null }));
       if (!silent) {
-        appendLog(item, 'Vidé', 'neutral');
+        appendLog(item, 'Purgé', 'neutral');
       }
     },
     [appendLog, clearBacConfirm]
@@ -363,28 +455,18 @@ export default function App() {
   const handleStopClick = (item: GarnishItem) => {
     const state = bacStates[item.id];
     if (!state) return;
-
-    const remainingSec = Math.ceil((state.endTime - Date.now()) / 1000);
-    if (remainingSec <= 0) {
-      stopBac(item);
-      return;
-    }
-
-    if (confirmPending[item.id] === 'stop') {
-      stopBac(item);
-    } else {
-      setBacConfirm(item.id, 'stop');
-    }
+    stopBac(item);
   };
 
   const launchAll = (resetExisting: boolean) => {
-    setStartAllModalOpen(false);
+    if (startAllTimerRef.current) window.clearTimeout(startAllTimerRef.current);
+    setStartAllConfirming(false);
     void ensureAudioAndWakeLock(false);
 
     const ts = Date.now();
     setBacStates((prev) => {
       const next = { ...prev };
-      for (const item of GARNISH_ITEMS) {
+      for (const item of effectiveItems) {
         if (resetExisting || !next[item.id]) {
           clearBacConfirm(item.id);
           const state: BacState = {
@@ -403,7 +485,7 @@ export default function App() {
     setNow(ts);
     beep(880, 0.12, 0.22);
     appendLog(
-      GARNISH_ITEMS[0],
+      effectiveItems[0],
       resetExisting ? 'Démarré' : 'Rechargé',
       'ok',
       ts
@@ -413,11 +495,26 @@ export default function App() {
   const handleStartAllClick = () => {
     void ensureAudioAndWakeLock(false);
     const activeItems = GARNISH_ITEMS.filter((item) => bacStates[item.id] !== null);
+    const idleCount = GARNISH_ITEMS.length - activeItems.length;
+
     if (activeItems.length === 0) {
       launchAll(true);
       return;
     }
-    setStartAllModalOpen(true);
+
+    if (idleCount > 0) {
+      launchAll(false);
+      return;
+    }
+
+    if (startAllConfirming) {
+      launchAll(true);
+    } else {
+      setStartAllConfirming(true);
+      startAllTimerRef.current = window.setTimeout(() => {
+        setStartAllConfirming(false);
+      }, 3500);
+    }
   };
 
   const handleStopAllClick = () => {
@@ -453,8 +550,17 @@ export default function App() {
     });
   };
 
+  const toggleCompactView = () => {
+    setCompactView((prev) => {
+      const next = !prev;
+      localStorage.setItem('time_app_compact_view', next ? '1' : '0');
+      if (next) setFilterTab('all');
+      return next;
+    });
+  };
+
   const computedBacs = useMemo(() => {
-    return GARNISH_ITEMS.map((item, index) => {
+    return effectiveItems.map((item, index) => {
       const state = bacStates[item.id];
       if (!state) {
         return {
@@ -492,7 +598,7 @@ export default function App() {
         priority: 2000 + index,
       };
     });
-  }, [bacStates, now]);
+  }, [bacStates, effectiveItems, now]);
 
   const counts = useMemo(() => {
     let active = 0;
@@ -532,6 +638,7 @@ export default function App() {
         id: b.item.id,
         name: b.item.name,
         dureeTxt: b.item.dureeTxt,
+        warmupTxt: b.item.warmupTxt,
         status: b.status,
         remainingFormatted: formatHMS(b.remainingSec),
         endClock: b.endTime ? formatClock(b.endTime, false) : null,
@@ -568,17 +675,65 @@ export default function App() {
     setActiveSection(section);
   };
 
+  const isPhoneCompactStation = activeSection === 'station' && compactView;
+
   return (
-    <div className="min-h-dvh bg-[#090d16] text-slate-50 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-8">
+    <div
+      className={
+        isPhoneCompactStation
+          ? 'h-dvh md:h-auto md:min-h-dvh overflow-hidden md:overflow-visible flex flex-col bg-[#090d16] text-slate-50 pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-8'
+          : 'min-h-dvh bg-[#090d16] text-slate-50 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-8'
+      }
+    >
       {/* Top Bar Contract : 3 zones strictes */}
-      <header className="sticky top-0 z-30 bg-[#090d16]/90 backdrop-blur-md border-b border-[#263147]">
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
+      <header className="sticky top-0 z-30 shrink-0 bg-[#090d16]/90 backdrop-blur-md border-b border-[#263147]">
+        <div className="max-w-[1440px] mx-auto px-3 sm:px-6 h-12 sm:h-16 flex items-center justify-between gap-4 sm:gap-8">
           <button
             type="button"
             onClick={() => setActiveSection('station')}
-            className="text-xl font-extrabold tracking-[0.2em] text-sky-400 whitespace-nowrap shrink-0 text-left focus-visible:outline-2 focus-visible:outline-sky-400 rounded"
+            className="inline-flex items-center gap-2.5 text-lg sm:text-xl font-extrabold tracking-[0.2em] text-sky-400 whitespace-nowrap shrink-0 text-left focus-visible:outline-2 focus-visible:outline-sky-400 rounded"
           >
-            TIME
+            <svg
+              viewBox="0 0 64 64"
+              className="w-8 h-8 sm:w-9 sm:h-9 shrink-0"
+              role="img"
+              aria-label="Logo Burger King"
+            >
+              <circle cx="32" cy="32" r="30" fill="#F5EBDC" />
+              <path
+                d="M14 23 C14 13, 50 13, 50 23 L14 23 Z"
+                fill="#FF8732"
+              />
+              <text
+                x="32"
+                y="32.5"
+                textAnchor="middle"
+                fill="#D62300"
+                fontSize="8.8"
+                fontWeight="900"
+                fontFamily="Arial Black, Impact, sans-serif"
+                letterSpacing="0.3"
+              >
+                BURGER
+              </text>
+              <text
+                x="32"
+                y="41.5"
+                textAnchor="middle"
+                fill="#D62300"
+                fontSize="10.2"
+                fontWeight="900"
+                fontFamily="Arial Black, Impact, sans-serif"
+                letterSpacing="0.5"
+              >
+                KING
+              </text>
+              <path
+                d="M14 44 L50 44 C50 50.5, 14 50.5, 14 44 Z"
+                fill="#FF8732"
+              />
+            </svg>
+            <span>TIME</span>
           </button>
 
           <nav className="hidden md:flex items-center gap-6 text-sm font-semibold">
@@ -621,26 +776,41 @@ export default function App() {
             <button
               type="button"
               onClick={handleStartAllClick}
-              className="min-h-[42px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-transform active:scale-[0.97]"
+              aria-label={startAllConfirming ? 'Confirmer relancer tous les bacs' : 'Lancer les bacs'}
+              title={startAllConfirming ? 'Appuyer encore pour tout relancer' : 'Tout lancer'}
+              className={`min-h-[40px] min-w-[40px] sm:min-h-[42px] sm:min-w-[42px] px-2.5 rounded-xl text-white inline-flex items-center justify-center whitespace-nowrap shrink-0 transition-transform active:scale-[0.95] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 ${
+                startAllConfirming
+                  ? 'bg-red-600 hover:bg-red-500'
+                  : 'bg-blue-600 hover:bg-blue-500'
+              }`}
             >
-              <Play className="w-4 h-4 fill-current" />
-              <span>Tout lancer</span>
+              <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-current ml-0.5" />
             </button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-[1440px] mx-auto px-3 sm:px-6 pt-4 space-y-4">
+      <main
+        className={
+          isPhoneCompactStation
+            ? 'w-full max-w-[1440px] mx-auto px-2 sm:px-6 pt-1.5 pb-1.5 sm:pt-4 flex-1 min-h-0 flex flex-col gap-1.5 sm:gap-4 md:block md:space-y-4'
+            : 'max-w-[1440px] mx-auto px-2 sm:px-6 pt-2 sm:pt-4 space-y-2.5 sm:space-y-4'
+        }
+      >
         {/* Barre d'état & outils opérationnels */}
-        <section className="bg-[#121826] border border-[#263147] rounded-2xl p-3.5 sm:p-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-3 text-sm">
-              <span className="font-mono-tabular text-base sm:text-lg font-extrabold text-slate-100 bg-[#1a2234] border border-[#263147] px-3 py-1.5 rounded-lg">
+        <section
+          className={`bg-[#121826] border border-[#263147] rounded-2xl shrink-0 ${
+            compactView ? 'p-2 sm:p-4 space-y-1.5 sm:space-y-3' : 'p-3.5 sm:p-4 space-y-3'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 sm:gap-3 text-sm min-w-0">
+              <span className="font-mono-tabular text-sm sm:text-lg font-extrabold text-slate-100 bg-[#1a2234] border border-[#263147] px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg shrink-0">
                 {formatClock(now, true)}
               </span>
-              <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm font-semibold">
+              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-semibold truncate">
                 <span className="font-mono-tabular text-emerald-400">
-                  {counts.totalRunning}/12 actifs
+                  {counts.totalRunning}/{effectiveItems.length}
                 </span>
                 {counts.warning > 0 && (
                   <>
@@ -648,7 +818,7 @@ export default function App() {
                       ·
                     </span>
                     <span className="font-mono-tabular text-amber-400">
-                      {counts.warning} à prévoir
+                      {counts.warning} alerte{counts.warning > 1 ? 's' : ''}
                     </span>
                   </>
                 )}
@@ -665,25 +835,31 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 text-xs font-semibold">
+            <div className="flex items-center gap-1.5 text-xs font-semibold shrink-0" title={wakeLockLabel}>
               <Sun
                 className={`w-4 h-4 ${
                   wakeLockStatus === 'active' ? 'text-emerald-400' : 'text-slate-500'
                 }`}
               />
               <span
-                className={
+                className={`${compactView ? 'hidden sm:inline' : 'inline'} ${
                   wakeLockStatus === 'active' ? 'text-emerald-400' : 'text-slate-400'
-                }
+                }`}
               >
                 {wakeLockLabel}
               </span>
             </div>
           </div>
 
-          <div className="pt-3 border-t border-[#263147] flex flex-wrap items-center justify-between gap-2.5">
+          <div
+            className={`${
+              compactView ? 'pt-2 sm:pt-3' : 'pt-3'
+            } border-t border-[#263147] flex flex-wrap items-center justify-between gap-2`}
+          >
             <div
-              className="flex items-center gap-1 p-1 bg-[#090d16] rounded-xl border border-[#263147] overflow-x-auto max-w-full"
+              className={`${
+                compactView ? 'hidden md:flex' : 'flex'
+              } items-center gap-1 p-1 bg-[#090d16] rounded-xl border border-[#263147] overflow-x-auto max-w-full`}
               role="tablist"
               aria-label="Filtrer les bacs"
             >
@@ -715,47 +891,71 @@ export default function App() {
               ))}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto max-w-full w-full md:w-auto">
+              <button
+                type="button"
+                onClick={toggleCompactView}
+                title={compactView ? 'Passer en vue détaillée' : 'Afficher tous les bacs en grille'}
+                className={`min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold border inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                  compactView
+                    ? 'bg-sky-500/15 text-sky-300 border-sky-400/60'
+                    : 'bg-[#1a2234] text-slate-300 border-[#263147] hover:text-white'
+                }`}
+              >
+                {compactView ? <LayoutGrid className="w-4 h-4" /> : <LayoutList className="w-4 h-4" />}
+                <span>{compactView ? 'Grille' : 'Détaillé'}</span>
+              </button>
+
               <button
                 type="button"
                 onClick={toggleSortMode}
-                className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold border inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                className={`min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold border inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
                   sortByUrgency
                     ? 'bg-sky-500/15 text-sky-300 border-sky-400/60'
                     : 'bg-[#1a2234] text-slate-300 border-[#263147] hover:text-white'
                 }`}
               >
                 <ArrowUpDown className="w-4 h-4" />
-                <span>{sortByUrgency ? 'Tri : Urgence' : 'Urgences en haut'}</span>
+                <span>{sortByUrgency ? 'Tri : Urgence' : 'Urgence'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => void ensureAudioAndWakeLock(true)}
-                className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                className={`min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
                   audioReady
                     ? 'bg-emerald-700 hover:bg-emerald-600 text-white'
                     : 'bg-amber-600 hover:bg-amber-500 text-white'
                 }`}
               >
                 {audioReady ? <Volume2 className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
-                <span>{audioReady ? 'Son prêt' : 'Activer Son'}</span>
+                <span>{audioReady ? 'Son OK' : 'Son'}</span>
               </button>
 
               <PWAInstallButton />
 
               <button
                 type="button"
+                onClick={() => setDurationsModalOpen(true)}
+                title="Modifier les temps de conservation et de warm-up"
+                className="min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold border bg-[#1a2234] text-slate-200 border-[#263147] hover:border-sky-400 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+              >
+                <SlidersHorizontal className="w-4 h-4" />
+                <span>Durées</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={handleStopAllClick}
                 disabled={counts.totalRunning === 0}
-                className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold border inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold border inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                   stopAllConfirming
                     ? 'bg-red-600 text-white border-red-600'
                     : 'bg-[#1a2234] text-slate-300 border-[#263147] hover:text-white'
                 }`}
               >
                 <Trash2 className="w-4 h-4" />
-                <span>{stopAllConfirming ? 'Confirmer vider ?' : 'Tout vider'}</span>
+                <span>{stopAllConfirming ? 'Sûr ?' : 'Vider'}</span>
               </button>
             </div>
           </div>
@@ -767,20 +967,26 @@ export default function App() {
         {counts.danger > 0 && (
           <div
             role="alert"
-            className="bg-red-500/15 border-2 border-red-500 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 card-pulse-danger"
+            className={`bg-red-500/15 border-2 border-red-500 rounded-xl sm:rounded-2xl flex flex-wrap items-center justify-between gap-2 card-pulse-danger shrink-0 ${
+              isPhoneCompactStation ? 'px-2.5 py-1.5 sm:px-4 sm:py-3' : 'px-4 py-3'
+            }`}
           >
-            <span className="font-bold text-sm sm:text-base text-red-100">
+            <span
+              className={`font-bold text-red-100 ${
+                isPhoneCompactStation ? 'text-xs sm:text-base' : 'text-sm sm:text-base'
+              }`}
+            >
               🚨 {counts.danger} bac{counts.danger > 1 ? 's' : ''} périmé
-              {counts.danger > 1 ? 's' : ''} : renouvellement ou retrait requis !
+              {counts.danger > 1 ? 's' : ''} : renouvellement requis !
             </span>
             {!alarmSilenced && (
               <button
                 type="button"
                 onClick={() => setAlarmSilenced(true)}
-                className="min-h-[40px] px-4 py-2 rounded-xl bg-white text-red-900 text-xs sm:text-sm font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap"
+                className="min-h-[34px] sm:min-h-[40px] px-3 sm:px-4 py-1 sm:py-2 rounded-lg sm:rounded-xl bg-white text-red-900 text-xs sm:text-sm font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap"
               >
-                <BellOff className="w-4 h-4" />
-                <span>Couper la sonnerie</span>
+                <BellOff className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                <span>Couper</span>
               </button>
             )}
           </div>
@@ -792,10 +998,12 @@ export default function App() {
             className={
               assistantDocked
                 ? 'grid grid-cols-1 lg:grid-cols-[1fr_390px] xl:grid-cols-[1fr_420px] gap-4 items-start'
+                : isPhoneCompactStation
+                ? 'flex-1 min-h-0 flex flex-col md:block'
                 : ''
             }
           >
-            <div>
+            <div className={isPhoneCompactStation ? 'flex-1 min-h-0 flex flex-col md:block' : ''}>
               {displayedBacs.length === 0 ? (
                 <div className="bg-[#121826] border border-[#263147] rounded-2xl p-10 text-center">
                   <p className="text-base font-semibold text-slate-200">
@@ -806,11 +1014,17 @@ export default function App() {
                     onClick={() => setFilterTab('all')}
                     className="mt-3 min-h-[42px] px-4 py-2 rounded-xl bg-[#1a2234] border border-[#263147] text-sm font-semibold text-sky-400 hover:text-sky-300"
                   >
-                    Afficher les 12 bacs
+                    Afficher tous les bacs ({effectiveItems.length})
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                <div
+                  className={
+                    compactView
+                      ? 'flex-1 min-h-0 grid grid-cols-3 grid-rows-4 sm:grid-rows-none sm:grid-cols-4 lg:grid-cols-6 gap-1.5 sm:gap-2'
+                      : 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2 sm:gap-2.5'
+                  }
+                >
                   {displayedBacs.map((entry) => (
                     <GarnishCard
                       key={entry.item.id}
@@ -819,6 +1033,7 @@ export default function App() {
                       remainingSec={entry.remainingSec}
                       endTime={entry.endTime}
                       confirmPending={confirmPending[entry.item.id]}
+                      compact={compactView}
                       onPrimaryClick={handlePrimaryClick}
                       onStopClick={handleStopClick}
                     />
@@ -903,13 +1118,12 @@ export default function App() {
         </button>
       </nav>
 
-      <StartAllModal
-        isOpen={startAllModalOpen}
-        activeCount={counts.totalRunning}
-        idleCount={counts.idle}
-        onClose={() => setStartAllModalOpen(false)}
-        onLaunchIdleOnly={() => launchAll(false)}
-        onRestartAll={() => launchAll(true)}
+      <DurationsModal
+        isOpen={durationsModalOpen}
+        customDurations={customDurations}
+        customWarmups={customWarmups}
+        onClose={() => setDurationsModalOpen(false)}
+        onSave={handleSaveDurations}
       />
     </div>
   );

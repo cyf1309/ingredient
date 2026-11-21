@@ -12,6 +12,8 @@ export interface GarnishItem {
   icon: string;
   dureeTxt: string;
   sec: number;
+  warmupTxt: string;
+  warmupSec: number;
 }
 
 export interface BacState {
@@ -30,7 +32,7 @@ export interface ShiftLogEntry {
   itemId: string;
   itemName: string;
   itemIcon: string;
-  action: 'Démarré' | 'Rechargé' | 'Renouvelé' | 'Vidé' | 'Alerte 5 min' | 'Périmé';
+  action: 'Démarré' | 'Rechargé' | 'Renouvelé' | 'Vidé' | 'Purgé' | 'Alerte 5 min' | 'Périmé';
   tone: 'ok' | 'warn' | 'danger' | 'neutral';
 }
 

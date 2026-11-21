@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Trash2, ClipboardList } from 'lucide-react';
 import { ShiftLogEntry } from '../types/station';
+import { GarnishIcon } from './GarnishIcon';
 
 interface ShiftLogViewProps {
   logs: ShiftLogEntry[];
@@ -93,10 +94,14 @@ export function ShiftLogView({ logs, onClearLogs, onReturnToStation }: ShiftLogV
                       {entry.timeFormatted}
                     </td>
                     <td className="py-3 px-4 font-semibold text-slate-100">
-                      <span className="mr-2" aria-hidden="true">
-                        {entry.itemIcon}
-                      </span>
-                      {entry.itemName}
+                      <div className="flex items-center gap-2.5">
+                        <GarnishIcon
+                          itemId={entry.itemId}
+                          fallbackEmoji={entry.itemIcon}
+                          size="sm"
+                        />
+                        <span>{entry.itemName}</span>
+                      </div>
                     </td>
                     <td className={`py-3 pl-4 text-right font-bold whitespace-nowrap ${actionColor}`}>
                       {entry.action}

@@ -1,5 +1,7 @@
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import http from 'http';
+import express from 'express';
+import type { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
@@ -18,6 +20,7 @@ interface BacSnapshot {
   id: string;
   name: string;
   dureeTxt: string;
+  warmupTxt?: string;
   status: 'idle' | 'active' | 'warning' | 'danger';
   remainingFormatted: string;
   endClock: string | null;
@@ -72,7 +75,7 @@ function buildSystemInstruction(stationContext?: StationContext): string {
     const bacsSummary = stationContext.bacs
       .map(
         (b) =>
-          `- ${b.name} (DLC ${b.dureeTxt}) : état=${b.status}, restant=${b.remainingFormatted}${b.endClock ? `, fin=${b.endClock}` : ''}`
+          `- ${b.name} (DLC ${b.dureeTxt}${b.warmupTxt ? `, Warm-up ${b.warmupTxt}` : ''}) : état=${b.status}, restant=${b.remainingFormatted}${b.endClock ? `, fin=${b.endClock}` : ''}`
       )
       .join('\n');
 
@@ -87,7 +90,7 @@ function buildSystemInstruction(stationContext?: StationContext): string {
     basePrompt.push(
       `\nÉtat en direct du poste à ${stationContext.currentClock} :`,
       `Résumé : ${stationContext.summary.active} en cours, ${stationContext.summary.warning} en alerte (< 5 min), ${stationContext.summary.danger} périmé(s), ${stationContext.summary.idle} arrêté(s).`,
-      `Détail des 12 bacs :\n${bacsSummary}`,
+      `Détail des ${stationContext.bacs.length} bacs :\n${bacsSummary}`,
       `Derniers mouvements du service :\n${logsSummary}`
     );
   }
@@ -97,7 +100,12 @@ function buildSystemInstruction(stationContext?: StationContext): string {
 
 async function startServer() {
   const app = express();
+  const httpServer = http.createServer(app);
   app.use(express.json({ limit: '1mb' }));
+
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.status(200).json({ ok: true });
+  });
 
   app.post('/api/chat', async (req: Request, res: Response) => {
     const body = req.body as ChatRequestBody;
@@ -186,19 +194,22 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('/{*splat}', (_req: Request, res: Response) => {
+    app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`TIME - Poste Garniture server listening on http://0.0.0.0:${PORT}`);
   });
 }

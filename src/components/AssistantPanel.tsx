@@ -14,6 +14,7 @@ interface StationSnapshot {
     id: string;
     name: string;
     dureeTxt: string;
+    warmupTxt?: string;
     status: 'idle' | 'active' | 'warning' | 'danger';
     remainingFormatted: string;
     endClock: string | null;
@@ -37,7 +38,7 @@ interface AssistantPanelProps {
 const QUICK_PROMPTS: Array<{ label: string; prompt: string; suggestedMode: AssistantMode }> = [
   {
     label: 'Priorités immédiates',
-    prompt: 'Analyse l’état actuel de mes 12 bacs et dis-moi ce que je dois traiter en priorité maintenant.',
+    prompt: 'Analyse l’état actuel de tous mes bacs et dis-moi ce que je dois traiter en priorité maintenant.',
     suggestedMode: 'fast',
   },
   {
@@ -231,13 +232,13 @@ export function AssistantPanel({
   };
 
   return (
-    <aside className="bg-[#121826] border border-[#263147] rounded-2xl flex flex-col h-[calc(100dvh-165px)] min-h-[460px] max-h-[820px] overflow-hidden">
+    <aside className="bg-[#121826] border border-[#263147] rounded-2xl flex flex-col h-[calc(100dvh-175px)] sm:h-[calc(100dvh-165px)] min-h-[340px] max-h-[820px] overflow-hidden">
       <div className="p-4 border-b border-[#263147] flex flex-col gap-3 shrink-0">
         <div className="flex items-center justify-between gap-2">
           <div>
             <h2 className="text-base font-bold text-slate-50">Assistant Poste Garniture</h2>
             <p className="text-xs text-slate-400">
-              Connecté en direct aux 12 chronos et aux règles HACCP
+              Connecté en direct à tous les chronos et aux règles HACCP
             </p>
           </div>
           <div className="flex items-center gap-1.5">
