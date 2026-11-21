@@ -48,6 +48,10 @@ import { AssistantPanel } from './components/AssistantPanel';
 import { StartAllModal } from './components/StartAllModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import {
+  requestAndroidNotificationPermission,
+  sendBacNotification,
+} from './utils/notifications';
 
 function readStoredBacState(id: string): BacState | null {
   const raw = localStorage.getItem(STORAGE_PREFIX + id);
@@ -105,7 +109,12 @@ export default function App() {
     () => localStorage.getItem(SORT_STORAGE_KEY) === '1'
   );
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
-  const [activeSection, setActiveSection] = useState<AppSection>('station');
+  const [activeSection, setActiveSection] = useState<AppSection>(() => {
+    if (typeof window === 'undefined') return 'station';
+    const view = new URLSearchParams(window.location.search).get('view');
+    if (view === 'journal' || view === 'assistant' || view === 'station') return view;
+    return 'station';
+  });
   const [assistantDocked, setAssistantDocked] = useState<boolean>(false);
 
   const [audioReady, setAudioReady] = useState<boolean>(false);
@@ -160,6 +169,9 @@ export default function App() {
     setAudioReady(ready);
     wakeLockDesiredRef.current = true;
     await requestScreenWakeLock(setWakeLockStatus);
+    if (playTest) {
+      await requestAndroidNotificationPermission();
+    }
   }, []);
 
   // Déblocage audio automatique au premier toucher n'importe où + reprise visibilité
@@ -218,6 +230,12 @@ export default function App() {
               hasNewDanger = true;
               setAlarmSilenced(false);
               appendLog(item, 'Périmé', 'danger', tickNow);
+              void sendBacNotification({
+                title: `🚨 ${item.name} périmé`,
+                body: `DLC ${item.dureeTxt} dépassée — renouvellement ou retrait requis.`,
+                tag: `bac-danger-${item.id}`,
+                urgent: true,
+              });
             }
           } else if (remainingSec <= WARN_THRESHOLD_SEC) {
             if (!st.warnTriggered) {
@@ -227,6 +245,12 @@ export default function App() {
               changed = true;
               hasNewWarn = true;
               appendLog(item, 'Alerte 5 min', 'warn', tickNow);
+              void sendBacNotification({
+                title: `⏳ ${item.name} — moins de 5 min`,
+                body: `Fin prévue à ${formatClock(st.endTime, false)}. Préparez la recharge.`,
+                tag: `bac-warn-${item.id}`,
+                urgent: false,
+              });
             }
           }
         }

@@ -27,10 +27,36 @@ export default defineConfig(() => {
           theme_color: '#090d16',
           background_color: '#090d16',
           display: 'standalone',
+          display_override: ['standalone', 'minimal-ui'],
           orientation: 'any',
           start_url: '/',
           scope: '/',
           lang: 'fr',
+          categories: ['food', 'productivity', 'utilities'],
+          prefer_related_applications: false,
+          shortcuts: [
+            {
+              name: 'Ouvrir le poste',
+              short_name: 'Poste',
+              description: 'Accéder aux 12 chronos de garniture',
+              url: '/?view=station',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+            },
+            {
+              name: 'Journal HACCP',
+              short_name: 'Journal',
+              description: 'Consulter l’historique du service',
+              url: '/?view=journal',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+            },
+            {
+              name: 'Assistant Poste',
+              short_name: 'Assistant',
+              description: 'Poser une question sur les rotations',
+              url: '/?view=assistant',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+            },
+          ],
           icons: [
             {
               src: '/pwa-192x192.png',
